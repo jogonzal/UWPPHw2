@@ -120,8 +120,8 @@ public:
 };
 
 struct edge {
-	unsigned long origin;
-	unsigned long destination;
+	unsigned long long origin;
+	unsigned long long destination;
 };
 
 Node* GetOrCreateNode(map<unsigned long long, Node*> *graphInputMap, unsigned long long id) {
@@ -210,6 +210,21 @@ void printEdge(unsigned long long origin, unsigned long long destination) {
 	printf("%llx -> %llx\n", origin, destination);
 }
 
+void printEdge(struct edge edge) {
+	printf("%llx -> %llx\n", edge.origin, edge.destination);
+}
+
+#include <fstream>
+
+int fileSize(const char *add) {
+	ifstream mySource;
+	mySource.open(add, ios_base::binary);
+	mySource.seekg(0, ios_base::end);
+	int size = mySource.tellg();
+	mySource.close();
+	return size;
+}
+
 int main(int argc, char *argv[]) {
 	opencl_start();
 
@@ -230,26 +245,28 @@ int main(int argc, char *argv[]) {
 	char* fileName = argv[2];
 
 	printf("Starting. root %llx, inputfile %s\n", rootValue, fileName);
-	FILE* file = fopen(fileName, "r");
+	FILE* file = fopen(fileName, "rb");
 
-	int buffSize = 100;
+	int buffSize = 1000;
 
-	unsigned long long *buff = (unsigned long long *) malloc(sizeof(unsigned long long) * buffSize);
+	struct edge *buff = (struct edge *) malloc(sizeof(struct edge) * buffSize);
 
 	int edgesTotal = 0;
 
-	map<unsigned long long, Node*> *graphInputMap = new map<unsigned long long, Node*>();
+	int size = fileSize(fileName);
+	printf("The size is %d\n", size);
 
+	map<unsigned long long, Node*> *graphInputMap = new map<unsigned long long, Node*>();
+	//Node *nodeArray = new Node[64000];
+	int nodeArrayOffset = 0;
 	for (;;) {
-		int sizeRead = sizeof(unsigned long long);
-		size_t elementsRead = fread(buff, sizeRead, buffSize, file);
+		size_t elementsRead = fread(buff, sizeof(struct edge), buffSize, file);
 		edgesTotal += elementsRead * 2;
-		for (int i = 0; i < elementsRead / 2; i++) {
-			unsigned long long origin = buff[i*2];
-			unsigned long long destination = buff[i*2 + 1];
-			printEdge(origin, destination);
-			Node *nodeOrigin = GetOrCreateNode(graphInputMap, origin);
-			Node *nodeDestination = GetOrCreateNode(graphInputMap, destination);
+		for (int i = 0; i < elementsRead; i++) {
+			struct edge edge = buff[i];
+			//printEdge(edge);
+			Node *nodeOrigin = GetOrCreateNode(graphInputMap, edge.origin);
+			Node *nodeDestination = GetOrCreateNode(graphInputMap, edge.destination);
 			nodeOrigin->children->push_back(nodeDestination);
 			nodeDestination->children->push_back(nodeOrigin);
 		}
@@ -319,9 +336,9 @@ int main(int argc, char *argv[]) {
 
 	PrintToFileAndConsole(verticesTotal, edgesTotal, rootValue, vertexCount, maxLevel);
 
-	return 0;
-
 	muls_cleanup();
 	opencl_end();
+
+	return 0;
 }
 
