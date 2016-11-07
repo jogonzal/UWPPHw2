@@ -119,6 +119,28 @@ void printVector(float *vector, int dim) {
 	printf("]\n");
 }
 
+void writeArrayToFile(int columns, float *arr) {
+	FILE *f = fopen("output.txt", "w+");
+	if (f == NULL)
+	{
+		printf("Error opening file!\n");
+		exit(1);
+	}
+
+	for (int c = 0; c < columns; c++)
+	{
+		float element = arr[c];
+		if (c == columns - 1) {
+			fprintf(f, "%f", element);
+		}
+		else {
+			fprintf(f, "%f,", element);
+		}
+	}
+
+	fclose(f);
+}
+
 int main(int argc, char *argv[]) {
 	opencl_start();
 
@@ -236,6 +258,9 @@ int main(int argc, char *argv[]) {
 			exit(-__LINE__);
 		}
 	}
+
+	// Write to file
+	writeArrayToFile(inputMatrixColumns, resultGpu);
 
 	free(vector);
 	free(matrix);
