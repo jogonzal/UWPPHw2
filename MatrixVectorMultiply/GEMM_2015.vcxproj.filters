@@ -35,4 +35,12 @@
       <Filter>OpenCL Files</Filter>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="input2.txt">
+      <Filter>Source Files</Filter>
+    </Text>
+    <Text Include="input1.txt">
+      <Filter>Source Files</Filter>
+    </Text>
+  </ItemGroup>
 </Project>

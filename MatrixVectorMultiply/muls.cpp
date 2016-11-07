@@ -3,6 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "opencl_interface.hpp"
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <sys/types.h>
+#include <time.h>
 
 #define WG_SIZE     256
 #define BLOCK_SIZE  2
@@ -98,7 +103,9 @@ void host_muls(float *matrix,
 	for (int r = 0; r < dim; r++) {
 		int acc = 0;
 		for (int c = 0; c < dim; c++) {
-			acc += matrix[r * dim + c] * vector[c];
+			int matrixNumber = matrix[r * dim + c];
+			int vectorNumber = vector[c];
+			acc += matrixNumber * vectorNumber;
 		}
 		result[r] = acc;
 	}
@@ -117,26 +124,93 @@ int main(int argc, char *argv[]) {
 
 	float   *matrix, *vector, *resultHost, *resultGpu;
 	int     i;
-	int     dim = atoi(argv[1]);
+	int     dim = 0;
 	//u_int64_t start, end;
 
-	if (dim & (BLOCK_SIZE * WG_SIZE - 1)) {
-		dim = (dim & (~(BLOCK_SIZE * WG_SIZE - 1))) + BLOCK_SIZE * WG_SIZE;
-	}
+	char* inputFile = argv[1];
+	printf("Will do matrix multiply with GPU and will parse %s for input.\n", inputFile);
 
-	printf("Dimensions are %d\n", dim);
+	FILE* file = fopen(inputFile, "r"); /* should check the result */
+	char line[1024];
 
-	matrix = (float*)malloc(sizeof(*matrix) * dim * dim);
-	vector = (float*)malloc(sizeof(*vector) * dim);
-	resultHost = (float*)malloc(sizeof(*resultHost) * dim);
-	resultGpu = (float*)malloc(sizeof(*resultGpu) * dim);
+	int inputMatrixRows = -1;
+	int inputMatrixColumns = -1;
+	bool arraysAreInitialized = false;
+	bool matrixFilled = false;
+	bool vectorFilled = false;
 
-	for (i = 0; i < dim * dim; i++) {
-		matrix[i] = 1;
-	}
+	int matrixOffset = 0;
+	int vectorOffset = 0;
+	int expectedMatrixElements = -1;
+	int expectedVectorElements = -1;
 
-	for (i = 0; i < dim; i++) {
-		vector[i] = 2;
+	while (fgets(line, sizeof(line), file)) {
+		char *element = strtok(line, ",");
+		while (element != NULL) {
+			int elementAsInteger = atoi(element);
+
+			//printf("%d\n", elementAsInteger);
+
+			// State machine goes here
+			if (inputMatrixRows == -1) {
+				inputMatrixRows = elementAsInteger;
+			}
+			else if (inputMatrixColumns == -1) {
+				inputMatrixColumns = elementAsInteger;
+			}
+			else {
+				if (!arraysAreInitialized) {
+					if (inputMatrixRows != inputMatrixColumns) {
+						printf("Dimensions must match on matrix (square). %d and %d don't match.\n",
+							inputMatrixColumns, inputMatrixRows);
+						exit(-__LINE__);
+					}
+					dim = inputMatrixRows;
+					if (dim & (BLOCK_SIZE * WG_SIZE - 1)) {
+						dim = (dim & (~(BLOCK_SIZE * WG_SIZE - 1))) + BLOCK_SIZE * WG_SIZE;
+					}
+					printf("Dimensions are %d x %d. Creating arrays...\n", inputMatrixRows, inputMatrixColumns);
+					matrix = (float*)malloc(sizeof(*matrix) * dim * dim);
+					vector = (float*)malloc(sizeof(*vector) * dim);
+					resultHost = (float*)malloc(sizeof(*resultHost) * dim);
+					resultGpu = (float*)malloc(sizeof(*resultGpu) * dim);
+					for (i = 0; i < dim * dim; i++) {
+						matrix[i] = 0;
+					}
+					for (i = 0; i < dim; i++) {
+						vector[i] = 0;
+					}
+					expectedMatrixElements = inputMatrixRows * inputMatrixColumns;
+					expectedVectorElements = inputMatrixColumns;
+					arraysAreInitialized = true;
+				}
+
+
+				if (!matrixFilled) {
+					int r = matrixOffset / inputMatrixColumns;
+					int c = matrixOffset%inputMatrixColumns;
+					matrix[r * dim + c] = elementAsInteger;
+					matrixOffset++;
+					if (matrixOffset == expectedMatrixElements) {
+						matrixFilled = true;
+					}
+				}
+				else if (!vectorFilled) {
+					vector[vectorOffset] = elementAsInteger;
+					vectorOffset++;
+					if (vectorOffset == expectedVectorElements) {
+						vectorFilled = true;
+					}
+				}
+				else {
+					printf("\nERROR IN INPUT!!!!!!!\nToo many numbers?");
+					return -1;
+				}
+			}
+
+			// Advance to next
+			element = strtok(NULL, ",");
+		}
 	}
 
 	printf("Multiplying matrix and vector in host...\n");
