@@ -10,17 +10,22 @@ char _muls[] =
 "#define WG_SIZE    256\n"
 "#define BLOCK_SIZE 2\n"
 OPENCL_CODE(
-	kernel void _muls(global const float *in_vector,
-		global float *out_vector,
-		float scalar) {
-	const int pos = get_global_id(0) & (~(WG_SIZE - 1));
-	const int local_id = get_local_id(0);
-	int i;
+	kernel void _muls(
+		global float *matrix,
+		global float *vector,
+		global float *result,
+		int dim) {
+		const int globalId = get_global_id(0);
 
-	for (i = 0; i < BLOCK_SIZE; i++) {
-		out_vector[pos * BLOCK_SIZE + local_id + i * WG_SIZE] =
-			in_vector[pos * BLOCK_SIZE + local_id + i * WG_SIZE] * scalar;
-	}
+		for (int i = 0; i < BLOCK_SIZE; i++) {
+			int position = globalId + i * WG_SIZE;
+			int row = position;
+			int acc = 0;
+			for (int c = 0; c < dim; c++) {
+				acc += matrix[row * dim + c] * vector[c];
+			}
+			result[position] = acc;
+		}
 });
 
 // Wrapper
@@ -30,40 +35,45 @@ void muls_cleanup() {
 	if (_muls_init)
 		clReleaseProgram(_muls_program);
 }
-void muls(const float *in_vector,
-	float *out_vector,
-	float scalar,
-	int len) {
+void muls(float *matrix,
+	float *vector,
+	float *result,
+	int dim) {
 	cl_kernel _muls_kernel;
 
 	if (!_muls_init) {
 		_muls_program = opencl_compile_program(_muls);
 		_muls_init = true;
 	}
-	cl_int cl_len = len;
-	cl_mem cl_in_vector, cl_out_vector;
+	cl_int cl_dim = dim;
+	cl_mem cl_in_vector, cl_in_matrix, cl_out_result;
 	cl_int err;
 	cl_kernel kernel;
-	cl_float cl_scalar = scalar;
+
+	cl_in_matrix = clCreateBuffer(opencl_get_context(),
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(float) * dim * dim, (void *)matrix, &err);
+	clCheckErr(err, "Failed to create device buffer");
 
 	cl_in_vector = clCreateBuffer(opencl_get_context(),
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(float) * len, (void *)in_vector, &err);
+		sizeof(float) * dim, (void *)vector, &err);
 	clCheckErr(err, "Failed to create device buffer");
 
-	cl_out_vector = clCreateBuffer(opencl_get_context(), CL_MEM_WRITE_ONLY,
-		sizeof(float) * len, NULL, &err);
+	cl_out_result = clCreateBuffer(opencl_get_context(), CL_MEM_WRITE_ONLY,
+		sizeof(float) * dim, NULL, &err);
 	clCheckErr(err, "Failed to create device buffer");
 
 	kernel = clCreateKernel(_muls_program, "_muls", &err);
 	clCheckErr(err, "Failed to create kernel");
 
-	clCheck(clSetKernelArg(kernel, 0, sizeof(cl_in_vector), &cl_in_vector));
-	clCheck(clSetKernelArg(kernel, 1, sizeof(cl_out_vector), &cl_out_vector));
-	clCheck(clSetKernelArg(kernel, 2, sizeof(cl_float), &cl_scalar));
+	clCheck(clSetKernelArg(kernel, 0, sizeof(cl_in_matrix), &cl_in_matrix));
+	clCheck(clSetKernelArg(kernel, 1, sizeof(cl_in_vector), &cl_in_vector));
+	clCheck(clSetKernelArg(kernel, 2, sizeof(cl_out_result), &cl_out_result));
+	clCheck(clSetKernelArg(kernel, 3, sizeof(cl_float), &cl_dim));
 
 	cl_event kernel_completion;
-	size_t global_work_size[1] = { len / BLOCK_SIZE };
+	size_t global_work_size[1] = { dim / BLOCK_SIZE };
 	size_t local_work_size[1] = { WG_SIZE };
 
 	clCheck(clEnqueueNDRangeKernel(opencl_get_queue(), kernel,
@@ -72,22 +82,26 @@ void muls(const float *in_vector,
 	clCheck(clWaitForEvents(1, &kernel_completion));
 	clCheck(clReleaseEvent(kernel_completion));
 
-	clCheck(clEnqueueReadBuffer(opencl_get_queue(), cl_out_vector, CL_TRUE,
-		0, len * sizeof(float), out_vector, 0, NULL, NULL));
+	clCheck(clEnqueueReadBuffer(opencl_get_queue(), cl_out_result, CL_TRUE,
+		0, dim * sizeof(float), result, 0, NULL, NULL));
 
+	clCheck(clReleaseMemObject(cl_in_matrix));
 	clCheck(clReleaseMemObject(cl_in_vector));
-	clCheck(clReleaseMemObject(cl_out_vector));
+	clCheck(clReleaseMemObject(cl_out_result));
 	clCheck(clReleaseKernel(kernel));
 }
 
-void host_muls(const float *in_vector,
-	float *out_vector,
-	float scalar,
-	int len) {
-	int i;
-
-	for (i = 0; i < len; i++)
-		out_vector[i] = in_vector[i] * scalar;
+void host_muls(float *matrix,
+	float *vector,
+	float *result,
+	int dim) {
+	for (int r = 0; r < dim; r++) {
+		int acc = 0;
+		for (int c = 0; c < dim; c++) {
+			acc += matrix[r * dim + c] * vector[c];
+		}
+		result[r] = acc;
+	}
 }
 
 void printVector(float *vector, int dim) {
@@ -101,7 +115,7 @@ void printVector(float *vector, int dim) {
 int main(int argc, char *argv[]) {
 	opencl_start();
 
-	float   *vector, *result, temp;
+	float   *matrix, *vector, *resultHost, *resultGpu;
 	int     i;
 	int     dim = atoi(argv[1]);
 	//u_int64_t start, end;
@@ -109,42 +123,50 @@ int main(int argc, char *argv[]) {
 	if (dim & (BLOCK_SIZE * WG_SIZE - 1)) {
 		dim = (dim & (~(BLOCK_SIZE * WG_SIZE - 1))) + BLOCK_SIZE * WG_SIZE;
 	}
-	vector = (float*)malloc(sizeof(*vector) * dim);
-	result = (float*)malloc(sizeof(*result) * dim);
 
-	for (i = 0; i < dim; i++) {
-		vector[i] = i;
+	printf("Dimensions are %d\n", dim);
+
+	matrix = (float*)malloc(sizeof(*matrix) * dim * dim);
+	vector = (float*)malloc(sizeof(*vector) * dim);
+	resultHost = (float*)malloc(sizeof(*resultHost) * dim);
+	resultGpu = (float*)malloc(sizeof(*resultGpu) * dim);
+
+	for (i = 0; i < dim * dim; i++) {
+		matrix[i] = 1;
 	}
 
-	printf("Input:\n");
-	printVector(vector, dim);
+	for (i = 0; i < dim; i++) {
+		vector[i] = 2;
+	}
+
+	printf("Multiplying matrix and vector in host...\n");
 
 	//start = gettimeofday_usec();
-	host_muls(vector, result, 5.0, dim);
-	printf("Times 5:\n");
-	printVector(result, dim);
+	host_muls(matrix, vector, resultHost, dim);
 	//end = gettimeofday_usec();
 	//printf("Host V*S: %.2f seconds\n", ((double)((end - start))) / ONE_MILLION);
 
-	muls(vector, result, 6.0, dim);
-	printf("Times 6:\n");
-	printVector(result, dim);
+	printf("Multiplying matrix and vector in GPU...\n");
+	muls(matrix, vector, resultGpu, dim);
 	//start = gettimeofday_usec();
-	muls(vector, result, 7.0, dim);
-	printf("Times 7:\n");
-	printVector(result, dim);
 	//end = gettimeofday_usec();
 	//printf("GPU M*S: %.2f seconds\n", ((double)((end - start))) / ONE_MILLION);
 
 	// Check the results
 	for (i = 0; i < dim; i++) {
-		temp = vector[i] * 7.0;
-		if ((temp != 0.0 || vector[i] != 0.0) && fabs(temp - result[i]) > 0.1 * temp) {
+		float resultHostIndividual = resultHost[i];
+		float resultGpuIndividual = resultGpu[i];
+		if (fabs(resultHostIndividual - resultGpuIndividual) > fabs(0.1 * resultHostIndividual)) {
 			printf("Result index: %d seems wrong: %f != %f\n",
-				i, result[i], temp);
+				i, resultHostIndividual, resultGpuIndividual);
 			exit(-__LINE__);
 		}
 	}
+
+	free(vector);
+	free(matrix);
+	free(resultHost);
+	free(resultGpu);
 
 	muls_cleanup();
 	opencl_end();
