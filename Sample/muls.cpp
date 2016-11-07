@@ -13,13 +13,11 @@ OPENCL_CODE(
 	kernel void _muls(global const float *in_vector,
 		global float *out_vector,
 		float scalar) {
-	const int pos = get_global_id(0) & (~(WG_SIZE - 1));
-	const int local_id = get_local_id(0);
-	int i;
+	const int globalId = get_global_id(0);
 
-	for (i = 0; i < BLOCK_SIZE; i++) {
-		out_vector[pos * BLOCK_SIZE + local_id + i * WG_SIZE] =
-			in_vector[pos * BLOCK_SIZE + local_id + i * WG_SIZE] * scalar;
+	for (int i = 0; i < BLOCK_SIZE; i++) {
+		int position = globalId + i * WG_SIZE;
+		out_vector[position] = in_vector[position] * scalar;
 	}
 });
 
