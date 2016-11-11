@@ -37,43 +37,26 @@ OPENCL_CODE(
 		int totalVertex = 0;
 		int chunkSizePerWorkItem = (dim / WG_SIZE);
 
-		//printf("Chunk size : %d\n", chunkSizePerWorkItem);
-
 		do {
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 			if (globalId == 0) {
 				foundNewLevel[0] = 0;
 			}
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-			//printf("%d: Starting loop!\n", globalId);
 			for (int i = 0; i < chunkSizePerWorkItem; i++) {
 				int edgeListOffset = globalId * chunkSizePerWorkItem + i;
-				//if ((edgeListOffset * 2 + 1) >= (dim * 2) || (edgeListOffset * 2 + 1) < 0) {
-				//	printf("%d: Accessing %d \n", globalId, edgeListOffset * 2);
-				//}
 				int origin = edgeList[edgeListOffset*2];
 				int destination = edgeList[edgeListOffset*2 + 1];
 
-				//printf("%d: Origin %d Destination %d \n", globalId, origin, destination);
 
 				if (origin == -1 || destination == -1) {
-					//printf("%d: I must be at the very end. \n", globalId);
+					// This is because of the "dim" compensation
 					break;
 				}
-
-				//if (origin <= -1 || origin >= nodeListSize) {
-				//	printf("%d: Accessing bad nodelist %d \n", globalId, origin);
-				//}
-
-				//if (destination <= -1 || destination >= nodeListSize) {
-				//	printf("%d: Accessing bad nodelist %d \n", globalId, destination);
-				//}
 
 				// If the node is the current level, activate it's destination
 				int currentLevelOrigin = nodeList[origin];
 				int currentLevelDestination = nodeList[destination];
-
-				//printf("%d: CurrentLevelOrigin %d CurrentLevelDestination %d \n", globalId, currentLevelOrigin, currentLevelDestination);
 
 				if (currentLevelOrigin == currentLevel) {
 					totalEdges++;
@@ -86,29 +69,20 @@ OPENCL_CODE(
 					nodeList[destination] = currentLevel + 1;
 					foundNewLevel[0] = 1;
 					totalVertex++;
-					//printf("%d: Found one node! \n", globalId);
 				}
 				else if (currentLevelDestination == currentLevel && currentLevelOrigin == -1) {
 					nodeList[origin] = currentLevel + 1;
 					foundNewLevel[0] = 1;
 					totalVertex++;
-					//printf("%d: Found one node! \n", globalId);
 				}
 			}
 			currentLevel++;
-			//printf("%d: Next loop... %d! \n", globalId, foundNewLevel[0]);
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-			//printf("%d: Checking for next loop... %d! \n", globalId, foundNewLevel[0]);
 		} while (foundNewLevel[0] == 1);
-		
-		//printf("%d: Done with loop!\n", globalId);
 
-		int maxLevel = currentLevel--;
-
-		result[globalId * 3] = maxLevel;
+		result[globalId * 3] = currentLevel;
 		result[globalId * 3 + 1] = totalVertex;
 		result[globalId * 3 + 2] = totalEdges;
-		//printf("%d: Finished with %d %d %d! \n", globalId, maxLevel, totalVertex, totalEdges);
 });
 
 // Wrapper
@@ -117,54 +91,6 @@ static cl_program _bfs_program;
 void bfs_cleanup() {
 	if (_bfs_init)
 		clReleaseProgram(_bfs_program);
-}
-void gpuSingleThreadedGpuAlgorithm(int *maxLevelGpu,
-	int *vertexCountGpu,
-	int *edgeCountGpu,
-	int dim,
-	int nodeListSize,
-	int *nodeList,
-	int *edgeList) {
-
-	// For every edge...
-	int currentLevel = 0;
-	int totalEdges = 0;
-	int totalVertex = 0;
-	bool foundNewLevel;
-	do {
-		foundNewLevel = false;
-		for (int i = 0; i < dim; i++) {
-			int origin = edgeList[i*2];
-			int destination = edgeList[i*2 + 1];
-
-			// If the node is the current level, activate it's destination
-			int currentLevelOrigin = nodeList[origin];
-			int currentLevelDestination = nodeList[destination];
-
-			if (currentLevelOrigin == currentLevel) {
-				totalEdges++;
-			}
-			if (currentLevelDestination == currentLevel) {
-				totalEdges++;
-			}
-
-			if (currentLevelOrigin == currentLevel && currentLevelDestination == -1) {
-				nodeList[destination] = currentLevel + 1;
-				foundNewLevel = true;
-				totalVertex++;
-			}
-			else if (currentLevelDestination == currentLevel && currentLevelOrigin == -1) {
-				nodeList[origin] = currentLevel + 1;
-				foundNewLevel = true;
-				totalVertex++;
-			}
-		}
-		currentLevel++;
-	} while (foundNewLevel);
-
-	*edgeCountGpu = totalEdges + 1;
-	*vertexCountGpu = totalVertex + 1;
-	*maxLevelGpu = currentLevel-1;
 }
 
 void bfs(int *maxLevelGpu,
@@ -233,6 +159,7 @@ void bfs(int *maxLevelGpu,
 	clCheck(clEnqueueReadBuffer(opencl_get_queue(), cl_out_result, CL_TRUE,
 		0, sizeof(int) * resultSize , result, 0, NULL, NULL));
 
+	// Accumulate results
 	*vertexCountGpu = 1;
 	*edgeCountGpu = 1;
 	for (int i = 0; i < WG_SIZE; i++) {
@@ -287,7 +214,6 @@ Node* GetOrCreateNode(map<unsigned long long, Node*> *graphInputMap, unsigned lo
 	std::map<unsigned long long, Node*>::iterator it;
 	it = graphInputMap->find(id);
 	if (it == graphInputMap->end()) {
-		//printf("Does not contain\n");
 		node = new Node(*nodeIndexOffset);
 		(*nodeIndexOffset)++;
 		node->id = id;
@@ -295,7 +221,6 @@ Node* GetOrCreateNode(map<unsigned long long, Node*> *graphInputMap, unsigned lo
 		return node;
 	}
 	else {
-		//printf("Contains\n");
 		// This would mean the dictionary already contained the node
 		// simply return it
 		return it->second;
@@ -363,6 +288,57 @@ void SingleThreadedBfs(int *maxLevel, int *vertexCount, int *edgeCount, Node *ro
 	}
 
 	free(bfsQueue);
+}
+
+// NOTE: The function below follows the same algorithm proposed in the Readme.md file, but single threaded
+// It only exists as a guide.
+void singleThreadedProposedBfsAlgorithm(int *maxLevelGpu,
+	int *vertexCountGpu,
+	int *edgeCountGpu,
+	int dim,
+	int nodeListSize,
+	int *nodeList,
+	int *edgeList) {
+
+	// For every edge...
+	int currentLevel = 0;
+	int totalEdges = 0;
+	int totalVertex = 0;
+	bool foundNewLevel;
+	do {
+		foundNewLevel = false;
+		for (int i = 0; i < dim; i++) {
+			int origin = edgeList[i * 2];
+			int destination = edgeList[i * 2 + 1];
+
+			// If the node is the current level, activate it's destination
+			int currentLevelOrigin = nodeList[origin];
+			int currentLevelDestination = nodeList[destination];
+
+			if (currentLevelOrigin == currentLevel) {
+				totalEdges++;
+			}
+			if (currentLevelDestination == currentLevel) {
+				totalEdges++;
+			}
+
+			if (currentLevelOrigin == currentLevel && currentLevelDestination == -1) {
+				nodeList[destination] = currentLevel + 1;
+				foundNewLevel = true;
+				totalVertex++;
+			}
+			else if (currentLevelDestination == currentLevel && currentLevelOrigin == -1) {
+				nodeList[origin] = currentLevel + 1;
+				foundNewLevel = true;
+				totalVertex++;
+			}
+		}
+		currentLevel++;
+	} while (foundNewLevel);
+
+	*edgeCountGpu = totalEdges + 1;
+	*vertexCountGpu = totalVertex + 1;
+	*maxLevelGpu = currentLevel - 1;
 }
 
 void printEdge(unsigned long long origin, unsigned long long destination) {
@@ -493,8 +469,12 @@ int main(int argc, char *argv[]) {
 	int vertexCountGpu = 0;
 	int edgeCountGpu = 0;
 	bfs(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
-	//gpuSingleThreadedGpuAlgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
 
+	// NOTE: The function below follows the same algorithm proposed in the Readme.md file, but single threaded
+	// It only exists as a guide.
+	// singleThreadedProposedBfsAlgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
+
+	// Compare results
 	if (	maxLevelSingleThreaded != maxLevelGpu
 		||	vertexCountSingleThreaded != vertexCountGpu
 		||	edgeCountSingleThreaded != edgeCountGpu) {
