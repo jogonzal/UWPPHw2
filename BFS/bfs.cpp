@@ -35,13 +35,15 @@ OPENCL_CODE(
 		int totalEdges = 0;
 		int totalVertex = 0;
 
+		printf("%d: The value is %d!\n", globalId, foundNewLevel[0]);
+
 		do {
 			if (globalId == 0) {
 				foundNewLevel[0] = 0;
 			}
-			printf("%d: Starting loop!", globalId);
+			printf("%d: Starting loop!\n", globalId);
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-			for (int i = 0; i < BLOCK_SIZE; i++) {
+			for (int i = 0; i < dim / WG_SIZE; i++) {
 				int edgeListOffset = globalId * 2 + i;
 				int origin = edgeList[edgeListOffset];
 				int destination = edgeList[edgeListOffset + 1];
@@ -69,10 +71,12 @@ OPENCL_CODE(
 				}
 			}
 			currentLevel++;
+			printf("%d: The value is %d!\n", globalId, foundNewLevel[0]);
+
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 		} while (foundNewLevel[0] == 1);
 		
-		printf("%d: Done with loop!", globalId);
+		printf("%d: Done with loop!\n", globalId);
 
 		int maxLevel = currentLevel--;
 
@@ -151,7 +155,6 @@ void bfs(int *maxLevelGpu,
 		_bfs_init = true;
 	}
 	cl_int cl_dim = dim;
-	cl_int cl_found_new = 0;
 	cl_mem cl_in_node_list, cl_in_edge_list;
 	cl_int err;
 	cl_mem cl_out_result;
@@ -160,7 +163,7 @@ void bfs(int *maxLevelGpu,
 	int resultSize = dim * 3;
 	int *result = new int[resultSize];
 
-	int foundNew = 0;
+	int foundNew = 7;
 
 	cl_in_node_list = clCreateBuffer(opencl_get_context(),
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -190,7 +193,7 @@ void bfs(int *maxLevelGpu,
 	clCheck(clSetKernelArg(kernel, 4, sizeof(cl_currentstate), &cl_currentstate));
 
 	cl_event kernel_completion;
-	size_t global_work_size[1] = { dim / BLOCK_SIZE };
+	size_t global_work_size[1] = { WG_SIZE };
 	size_t local_work_size[1] = { WG_SIZE };
 
 	clCheck(clEnqueueNDRangeKernel(opencl_get_queue(), kernel,
