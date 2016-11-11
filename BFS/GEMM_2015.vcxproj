@@ -161,7 +161,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="muls.cpp" />
+    <ClCompile Include="bfs.cpp" />
     <ClCompile Include="opencl_interface.cpp" />
   </ItemGroup>
   <ItemGroup>

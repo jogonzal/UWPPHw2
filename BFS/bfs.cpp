@@ -19,11 +19,11 @@ using namespace std;
 
 #define WG_SIZE     256
 #define BLOCK_SIZE  2
-char _muls[] =
+char _bfs[] =
 "#define WG_SIZE    256\n"
 "#define BLOCK_SIZE 2\n"
 OPENCL_CODE(
-	kernel void _muls(
+	kernel void _bfs(
 		global int *nodeList,
 		global int *edgeList,
 		global int *result,
@@ -82,11 +82,11 @@ OPENCL_CODE(
 });
 
 // Wrapper
-static bool _muls_init = false;
-static cl_program _muls_program;
-void muls_cleanup() {
-	if (_muls_init)
-		clReleaseProgram(_muls_program);
+static bool _bfs_init = false;
+static cl_program _bfs_program;
+void bfs_cleanup() {
+	if (_bfs_init)
+		clReleaseProgram(_bfs_program);
 }
 void gpuSinglealgorithm(int *maxLevelGpu,
 	int *vertexCountGpu,
@@ -137,18 +137,18 @@ void gpuSinglealgorithm(int *maxLevelGpu,
 	*maxLevelGpu = currentLevel-1;
 }
 
-void muls(int *maxLevelGpu,
+void bfs(int *maxLevelGpu,
 	int *vertexCountGpu,
 	int *edgeCountGpu,
 	int dim,
 	int nodeListSize,
 	int *nodeList,
 	int *edgeList) {
-	cl_kernel _muls_kernel;
+	cl_kernel _bfs_kernel;
 
-	if (!_muls_init) {
-		_muls_program = opencl_compile_program(_muls);
-		_muls_init = true;
+	if (!_bfs_init) {
+		_bfs_program = opencl_compile_program(_bfs);
+		_bfs_init = true;
 	}
 	cl_int cl_dim = dim;
 	cl_int cl_found_new = 0;
@@ -180,7 +180,7 @@ void muls(int *maxLevelGpu,
 		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
 		sizeof(int) * 1, (void *)&foundNew, &err);
 
-	kernel = clCreateKernel(_muls_program, "_muls", &err);
+	kernel = clCreateKernel(_bfs_program, "_bfs", &err);
 	clCheckErr(err, "Failed to create kernel");
 
 	clCheck(clSetKernelArg(kernel, 0, sizeof(cl_in_node_list), &cl_in_node_list));
@@ -222,7 +222,7 @@ void muls(int *maxLevelGpu,
 	delete[] result;
 }
 
-void host_muls(float *matrix,
+void host_bfs(float *matrix,
 	float *vector,
 	float *result,
 	int dim) {
@@ -461,7 +461,7 @@ int main(int argc, char *argv[]) {
 	int maxLevelGpu = 0; // Assumming at least root exists, level is 1
 	int vertexCountGpu = 0;
 	int edgeCountGpu = 0;
-	muls(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
+	bfs(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
 	//gpuSinglealgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
 
 	printf("Done!===============\n");
@@ -470,7 +470,7 @@ int main(int argc, char *argv[]) {
 	PrintToFileAndConsole(verticesTotal, edgesTotal, rootValue, vertexCountSingleThreaded, maxLevelSingleThreaded);
 	PrintToFileAndConsole(verticesTotal, edgesTotal, rootValue, vertexCountGpu, maxLevelGpu);
 
-	muls_cleanup();
+	bfs_cleanup();
 	opencl_end();
 
 	return 0;
