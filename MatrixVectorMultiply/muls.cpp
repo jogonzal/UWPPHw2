@@ -147,7 +147,6 @@ int main(int argc, char *argv[]) {
 	float   *matrix, *vector, *resultHost, *resultGpu;
 	int     i;
 	int     dim = 0;
-	//u_int64_t start, end;
 
 	char* inputFile = argv[1];
 	printf("Will do matrix multiply with GPU and will parse %s for input.\n", inputFile);
@@ -237,16 +236,10 @@ int main(int argc, char *argv[]) {
 
 	printf("Multiplying matrix and vector in host...\n");
 
-	//start = gettimeofday_usec();
 	host_muls(matrix, vector, resultHost, dim);
-	//end = gettimeofday_usec();
-	//printf("Host V*S: %.2f seconds\n", ((double)((end - start))) / ONE_MILLION);
 
 	printf("Multiplying matrix and vector in GPU...\n");
 	muls(matrix, vector, resultGpu, dim);
-	//start = gettimeofday_usec();
-	//end = gettimeofday_usec();
-	//printf("GPU M*S: %.2f seconds\n", ((double)((end - start))) / ONE_MILLION);
 
 	// Check the results
 	for (i = 0; i < dim; i++) {
