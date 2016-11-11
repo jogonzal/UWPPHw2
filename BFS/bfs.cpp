@@ -28,29 +28,52 @@ OPENCL_CODE(
 		global int *edgeList,
 		global int *result,
 		int dim,
-		global int *foundNewLevel) {
+		global int *foundNewLevel,
+		int nodeListSize) {
 
 		const int globalId = get_global_id(0);
 		int currentLevel = 0;
 		int totalEdges = 0;
 		int totalVertex = 0;
+		int chunkSizePerWorkItem = (dim / WG_SIZE);
 
-		printf("%d: The value is %d!\n", globalId, foundNewLevel[0]);
+		//printf("Chunk size : %d\n", chunkSizePerWorkItem);
 
 		do {
+			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
 			if (globalId == 0) {
 				foundNewLevel[0] = 0;
 			}
-			printf("%d: Starting loop!\n", globalId);
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-			for (int i = 0; i < dim / WG_SIZE; i++) {
-				int edgeListOffset = globalId * 2 + i;
-				int origin = edgeList[edgeListOffset];
-				int destination = edgeList[edgeListOffset + 1];
+			//printf("%d: Starting loop!\n", globalId);
+			for (int i = 0; i < chunkSizePerWorkItem; i++) {
+				int edgeListOffset = globalId * chunkSizePerWorkItem + i;
+				//if ((edgeListOffset * 2 + 1) >= (dim * 2) || (edgeListOffset * 2 + 1) < 0) {
+				//	printf("%d: Accessing %d \n", globalId, edgeListOffset * 2);
+				//}
+				int origin = edgeList[edgeListOffset*2];
+				int destination = edgeList[edgeListOffset*2 + 1];
+
+				//printf("%d: Origin %d Destination %d \n", globalId, origin, destination);
+
+				if (origin == -1 || destination == -1) {
+					//printf("%d: I must be at the very end. \n", globalId);
+					break;
+				}
+
+				//if (origin <= -1 || origin >= nodeListSize) {
+				//	printf("%d: Accessing bad nodelist %d \n", globalId, origin);
+				//}
+
+				//if (destination <= -1 || destination >= nodeListSize) {
+				//	printf("%d: Accessing bad nodelist %d \n", globalId, destination);
+				//}
 
 				// If the node is the current level, activate it's destination
 				int currentLevelOrigin = nodeList[origin];
 				int currentLevelDestination = nodeList[destination];
+
+				//printf("%d: CurrentLevelOrigin %d CurrentLevelDestination %d \n", globalId, currentLevelOrigin, currentLevelDestination);
 
 				if (currentLevelOrigin == currentLevel) {
 					totalEdges++;
@@ -63,26 +86,29 @@ OPENCL_CODE(
 					nodeList[destination] = currentLevel + 1;
 					foundNewLevel[0] = 1;
 					totalVertex++;
+					//printf("%d: Found one node! \n", globalId);
 				}
 				else if (currentLevelDestination == currentLevel && currentLevelOrigin == -1) {
 					nodeList[origin] = currentLevel + 1;
 					foundNewLevel[0] = 1;
 					totalVertex++;
+					//printf("%d: Found one node! \n", globalId);
 				}
 			}
 			currentLevel++;
-			printf("%d: The value is %d!\n", globalId, foundNewLevel[0]);
-
+			//printf("%d: Next loop... %d! \n", globalId, foundNewLevel[0]);
 			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+			//printf("%d: Checking for next loop... %d! \n", globalId, foundNewLevel[0]);
 		} while (foundNewLevel[0] == 1);
 		
-		printf("%d: Done with loop!\n", globalId);
+		//printf("%d: Done with loop!\n", globalId);
 
 		int maxLevel = currentLevel--;
 
 		result[globalId * 3] = maxLevel;
 		result[globalId * 3 + 1] = totalVertex;
 		result[globalId * 3 + 2] = totalEdges;
+		//printf("%d: Finished with %d %d %d! \n", globalId, maxLevel, totalVertex, totalEdges);
 });
 
 // Wrapper
@@ -92,7 +118,7 @@ void bfs_cleanup() {
 	if (_bfs_init)
 		clReleaseProgram(_bfs_program);
 }
-void gpuSinglealgorithm(int *maxLevelGpu,
+void gpuSingleThreadedGpuAlgorithm(int *maxLevelGpu,
 	int *vertexCountGpu,
 	int *edgeCountGpu,
 	int dim,
@@ -155,18 +181,19 @@ void bfs(int *maxLevelGpu,
 		_bfs_init = true;
 	}
 	cl_int cl_dim = dim;
+	cl_int cl_node_size = nodeListSize;
 	cl_mem cl_in_node_list, cl_in_edge_list;
 	cl_int err;
 	cl_mem cl_out_result;
 	cl_mem cl_currentstate;
 	cl_kernel kernel;
-	int resultSize = dim * 3;
+	int resultSize = WG_SIZE * 3;
 	int *result = new int[resultSize];
 
-	int foundNew = 7;
+	int foundNew = 0;
 
 	cl_in_node_list = clCreateBuffer(opencl_get_context(),
-		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
 		sizeof(int) * nodeListSize, (void *)nodeList, &err);
 	clCheckErr(err, "Failed to create device buffer");
 
@@ -191,6 +218,7 @@ void bfs(int *maxLevelGpu,
 	clCheck(clSetKernelArg(kernel, 2, sizeof(cl_out_result), &cl_out_result));
 	clCheck(clSetKernelArg(kernel, 3, sizeof(cl_int), &cl_dim));
 	clCheck(clSetKernelArg(kernel, 4, sizeof(cl_currentstate), &cl_currentstate));
+	clCheck(clSetKernelArg(kernel, 5, sizeof(cl_int), &cl_node_size));
 
 	cl_event kernel_completion;
 	size_t global_work_size[1] = { WG_SIZE };
@@ -207,12 +235,12 @@ void bfs(int *maxLevelGpu,
 
 	*vertexCountGpu = 1;
 	*edgeCountGpu = 1;
-	for (int i = 0; i < dim; i++) {
+	for (int i = 0; i < WG_SIZE; i++) {
 		int maxLevelLocal = result[i*3 + 0];
 		int vertexCountLocal = result[i*3 + 1];
 		int edgeCountLocal = result[i*3 + 2];
 
-		*maxLevelGpu = maxLevelLocal;
+		*maxLevelGpu = maxLevelLocal - 1;
 		(*vertexCountGpu) += vertexCountLocal;
 		(*edgeCountGpu) += edgeCountLocal;
 	}
@@ -398,7 +426,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	int *edgeList = new int[dim * 2];
-	for (int i = 0; i < dim; i++) {
+	for (int i = 0; i < dim * 2; i++) {
 		edgeList[i] = -1;
 	}
 	int *nodeList = new int[nodeMaxCount];
@@ -465,12 +493,20 @@ int main(int argc, char *argv[]) {
 	int vertexCountGpu = 0;
 	int edgeCountGpu = 0;
 	bfs(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
-	//gpuSinglealgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
+	//gpuSingleThreadedGpuAlgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
+
+	if (	maxLevelSingleThreaded != maxLevelGpu
+		||	vertexCountSingleThreaded != vertexCountGpu
+		||	edgeCountSingleThreaded != edgeCountGpu) {
+		printf("GPU calculated results %d, %d, %d do not match single threaded results %d, %d, %d",
+			maxLevelGpu, vertexCountGpu, edgeCountGpu,
+			maxLevelSingleThreaded, vertexCountSingleThreaded, edgeCountSingleThreaded);
+		exit(1);
+	}
 
 	printf("Done!===============\n");
 	printf("\n\n");
 
-	PrintToFileAndConsole(verticesTotal, edgesTotal, rootValue, vertexCountSingleThreaded, maxLevelSingleThreaded);
 	PrintToFileAndConsole(verticesTotal, edgesTotal, rootValue, vertexCountGpu, maxLevelGpu);
 
 	bfs_cleanup();
