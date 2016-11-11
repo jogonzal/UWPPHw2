@@ -27,14 +27,58 @@ OPENCL_CODE(
 		global int *nodeList,
 		global int *edgeList,
 		global int *result,
-		int dim) {
-		const int globalId = get_global_id(0);
-		global bool noNewLevelDiscovered = false;
-		
-		for (int i = 0; i < BLOCK_SIZE; i++) {
-			// For every i, we do work for one edge
+		int dim,
+		global int *foundNewLevel) {
 
-		}
+		const int globalId = get_global_id(0);
+		int currentLevel = 0;
+		int totalEdges = 0;
+		int totalVertex = 0;
+
+		do {
+			if (globalId == 0) {
+				foundNewLevel[0] = 0;
+			}
+			printf("%d: Starting loop!", globalId);
+			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+			for (int i = 0; i < BLOCK_SIZE; i++) {
+				int edgeListOffset = globalId * 2 + i;
+				int origin = edgeList[edgeListOffset];
+				int destination = edgeList[edgeListOffset + 1];
+
+				// If the node is the current level, activate it's destination
+				int currentLevelOrigin = nodeList[origin];
+				int currentLevelDestination = nodeList[destination];
+
+				if (currentLevelOrigin == currentLevel) {
+					totalEdges++;
+				}
+				if (currentLevelDestination == currentLevel) {
+					totalEdges++;
+				}
+
+				if (currentLevelOrigin == currentLevel && currentLevelDestination == -1) {
+					nodeList[destination] = currentLevel + 1;
+					foundNewLevel[0] = 1;
+					totalVertex++;
+				}
+				else if (currentLevelDestination == currentLevel && currentLevelOrigin == -1) {
+					nodeList[origin] = currentLevel + 1;
+					foundNewLevel[0] = 1;
+					totalVertex++;
+				}
+			}
+			currentLevel++;
+			barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+		} while (foundNewLevel[0] == 1);
+		
+		printf("%d: Done with loop!", globalId);
+
+		int maxLevel = currentLevel--;
+
+		result[globalId * 3] = maxLevel;
+		result[globalId * 3 + 1] = totalVertex;
+		result[globalId * 3 + 2] = totalEdges;
 });
 
 // Wrapper
@@ -54,14 +98,14 @@ void gpuSinglealgorithm(int *maxLevelGpu,
 
 	// For every edge...
 	int currentLevel = 0;
-	int totalEdges = 1;
-	int totalVertex = 1;
+	int totalEdges = 0;
+	int totalVertex = 0;
 	bool foundNewLevel;
 	do {
 		foundNewLevel = false;
-		for (int i = 0; i < dim; i += 2) {
-			int origin = edgeList[i];
-			int destination = edgeList[i + 1];
+		for (int i = 0; i < dim; i++) {
+			int origin = edgeList[i*2];
+			int destination = edgeList[i*2 + 1];
 
 			// If the node is the current level, activate it's destination
 			int currentLevelOrigin = nodeList[origin];
@@ -88,8 +132,8 @@ void gpuSinglealgorithm(int *maxLevelGpu,
 		currentLevel++;
 	} while (foundNewLevel);
 
-	*edgeCountGpu = totalEdges;
-	*vertexCountGpu = totalVertex;
+	*edgeCountGpu = totalEdges + 1;
+	*vertexCountGpu = totalVertex + 1;
 	*maxLevelGpu = currentLevel-1;
 }
 
@@ -107,11 +151,16 @@ void muls(int *maxLevelGpu,
 		_muls_init = true;
 	}
 	cl_int cl_dim = dim;
+	cl_int cl_found_new = 0;
 	cl_mem cl_in_node_list, cl_in_edge_list;
 	cl_int err;
 	cl_mem cl_out_result;
+	cl_mem cl_currentstate;
 	cl_kernel kernel;
-	int *result = new int[1];
+	int resultSize = dim * 3;
+	int *result = new int[resultSize];
+
+	int foundNew = 0;
 
 	cl_in_node_list = clCreateBuffer(opencl_get_context(),
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -120,12 +169,16 @@ void muls(int *maxLevelGpu,
 
 	cl_in_edge_list = clCreateBuffer(opencl_get_context(),
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(int) * dim, (void *)edgeList, &err);
+		sizeof(int) * dim * 2, (void *)edgeList, &err);
 	clCheckErr(err, "Failed to create device buffer");
 
 	cl_out_result = clCreateBuffer(opencl_get_context(), CL_MEM_WRITE_ONLY,
-		sizeof(int) * 1, NULL, &err);
+		sizeof(int) * resultSize, NULL, &err);
 	clCheckErr(err, "Failed to create device buffer");
+
+	cl_currentstate = clCreateBuffer(opencl_get_context(),
+		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+		sizeof(int) * 1, (void *)&foundNew, &err);
 
 	kernel = clCreateKernel(_muls_program, "_muls", &err);
 	clCheckErr(err, "Failed to create kernel");
@@ -134,6 +187,7 @@ void muls(int *maxLevelGpu,
 	clCheck(clSetKernelArg(kernel, 1, sizeof(cl_in_edge_list), &cl_in_edge_list));
 	clCheck(clSetKernelArg(kernel, 2, sizeof(cl_out_result), &cl_out_result));
 	clCheck(clSetKernelArg(kernel, 3, sizeof(cl_int), &cl_dim));
+	clCheck(clSetKernelArg(kernel, 4, sizeof(cl_currentstate), &cl_currentstate));
 
 	cl_event kernel_completion;
 	size_t global_work_size[1] = { dim / BLOCK_SIZE };
@@ -146,14 +200,26 @@ void muls(int *maxLevelGpu,
 	clCheck(clReleaseEvent(kernel_completion));
 
 	clCheck(clEnqueueReadBuffer(opencl_get_queue(), cl_out_result, CL_TRUE,
-		0, dim * sizeof(int), result, 0, NULL, NULL));
+		0, sizeof(int) * resultSize , result, 0, NULL, NULL));
 
-	*maxLevelGpu = result[0];
+	*vertexCountGpu = 1;
+	*edgeCountGpu = 1;
+	for (int i = 0; i < dim; i++) {
+		int maxLevelLocal = result[i*3 + 0];
+		int vertexCountLocal = result[i*3 + 1];
+		int edgeCountLocal = result[i*3 + 2];
+
+		*maxLevelGpu = maxLevelLocal;
+		(*vertexCountGpu) += vertexCountLocal;
+		(*edgeCountGpu) += edgeCountLocal;
+	}
 
 	clCheck(clReleaseMemObject(cl_in_node_list));
 	clCheck(clReleaseMemObject(cl_in_edge_list));
 	clCheck(clReleaseMemObject(cl_out_result));
 	clCheck(clReleaseKernel(kernel));
+
+	delete[] result;
 }
 
 void host_muls(float *matrix,
@@ -323,12 +389,12 @@ int main(int argc, char *argv[]) {
 
 	map<unsigned long long, Node*> *graphInputMap = new map<unsigned long long, Node*>();
 
-	int     dim = edgeMaxCount;
+	int     dim = edgeMaxCount / 2;
 	if (dim & (BLOCK_SIZE * WG_SIZE - 1)) {
 		dim = (dim & (~(BLOCK_SIZE * WG_SIZE - 1))) + BLOCK_SIZE * WG_SIZE;
 	}
 
-	int *edgeList = new int[dim];
+	int *edgeList = new int[dim * 2];
 	for (int i = 0; i < dim; i++) {
 		edgeList[i] = -1;
 	}
@@ -395,8 +461,8 @@ int main(int argc, char *argv[]) {
 	int maxLevelGpu = 0; // Assumming at least root exists, level is 1
 	int vertexCountGpu = 0;
 	int edgeCountGpu = 0;
-	//muls(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
-	gpuSinglealgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
+	muls(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
+	//gpuSinglealgorithm(&maxLevelGpu, &vertexCountGpu, &edgeCountGpu, dim, nodeMaxCount, nodeList, edgeList);
 
 	printf("Done!===============\n");
 	printf("\n\n");
